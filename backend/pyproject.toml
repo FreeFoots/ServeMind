@@ -1,0 +1,20 @@
+[project]
+name = "servemind-api"
+version = "0.1.0"
+description = "Independent evidence-first commerce support API"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.141,<1", "uvicorn[standard]>=0.32,<1", "pydantic>=2.10,<3", "httpx>=0.27,<1", "psycopg[binary]>=3.2,<4", "redis>=5,<9", "prometheus-client>=0.20,<1"]
+
+[project.optional-dependencies]
+rag = ["sentence-transformers>=3,<6", "torch>=2,<3"]
+mcp = ["mcp>=2.2,<3"]
+
+[project.scripts]
+servemind-api = "servemind.api.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,78 @@
+# Optional independent deployment. Never starts over the local database.
+# Set POSTGRES_PASSWORD and SERVEMIND_CONTAINER_RUNTIME explicitly.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: servemind
+      POSTGRES_DB: servemind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a separate container database password}
+    volumes:
+      - ${SERVEMIND_CONTAINER_RUNTIME:?set an external-volume runtime directory}/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U servemind -d servemind]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [service]
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - ${SERVEMIND_CONTAINER_RUNTIME}/redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [service]
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: [backend/.env]
+    environment:
+      SERVEMIND_ENV: production
+      SERVEMIND_DEMO_ACCOUNT_SWITCH: 'false'
+      SERVEMIND_COMMERCE_BACKEND: postgres
+      SERVEMIND_DATABASE_URL: postgresql:///servemind
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: servemind
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      SERVEMIND_REDIS_URL: redis://redis:6379/0
+      SERVEMIND_MODEL_CACHE: /app/backend/runtime/hf-cache/hub
+      SERVEMIND_MONITOR_CIDRS: 172.30.17.0/24
+    volumes:
+      - ${SERVEMIND_CONTAINER_RUNTIME}/api:/app/backend/runtime
+      - ./data:/app/data:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+    networks: [service]
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=200h]
+    ports: ['127.0.0.1:9317:9090']
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ${SERVEMIND_CONTAINER_RUNTIME}/prometheus:/prometheus
+    restart: unless-stopped
+    networks: [service]
+  nginx:
+    image: nginx:1.28-alpine
+    ports: ['127.0.0.1:8417:8080']
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on: [api]
+    restart: unless-stopped
+    networks: [service]
+networks:
+  service:
+    ipam:
+      config:
+        - subnet: 172.30.17.0/24

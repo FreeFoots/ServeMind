@@ -1,0 +1,30 @@
+groups:
+  - name: servemind
+    rules:
+      - alert: ServeMindUnavailable
+        expr: up{job="servemind"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: API metrics unavailable
+      - alert: ServeMindToolErrors
+        expr: sum(rate(servemind_tool_calls_total{status="error"}[5m])) / clamp_min(sum(rate(servemind_tool_calls_total[5m])), 0.001) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Tool error rate exceeds five percent
+      - alert: ServeMindLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(servemind_request_latency_seconds_bucket[5m]))) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Request P95 exceeds thirty seconds
+      - alert: ServeMindUnauthorizedTool
+        expr: increase(servemind_safety_events_total{kind="unauthorized"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Agent tool authorization blocked an attempt

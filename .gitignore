@@ -1,0 +1,36 @@
+# Private configuration, records, documents, datasets and runtime state.
+.env*
+*.env
+AGENTS.md
+AGNETS.md
+docs/
+data/
+backend/runtime/
+backend/evaluation/
+SwiftUI/
+*.log
+*.sqlite*
+*.db
+*.dump
+*.rdb
+*.aof
+*.pem
+*.key
+*.p12
+*.safetensors
+*.pt
+*.pth
+*.bin
+# Reproducible dependencies and build artifacts.
+node_modules/
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+.build/
+.DS_Store
+.idea/
+.vscode/
