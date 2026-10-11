@@ -27,6 +27,7 @@ from servemind.memory.redis_working_memory import RedisWorkingMemory
 from servemind.memory.postgres_memory import PostgresConversationMemory
 from servemind.memory.semantic_memory import prepare_summary
 from servemind.monitor.performance_monitor import CommerceMonitor
+from servemind.service.commerce_handoff import HANDOFF_TOPICS, CommerceHandoffWorkflow
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class CommerceSupport:
         self.skills = SkillManager()
         self.agents = build_agent_pool()
         self.domain_router = CommerceDomainRouter()
+        self.handoff_workflow = CommerceHandoffWorkflow()
         self.decomposer = IntentDecomposer()
         self.intent_router = SemanticIntentRouter()
         self.tools = build_commerce_tools(self.knowledge)
@@ -173,7 +175,7 @@ class CommerceSupport:
         graph = self.domain_router.tasks(routing, tuple(topics),
             product_id=product.get("id", "current_product"), message=message)
         topics = list(graph.intents)
-        permissions = {"catalog_read", "purchase_read", "policy_public"}
+        permissions = {"catalog_read", "purchase_read", "policy_public", "handoff_prepare"}
         selections = [self.skills.select(message, topic, "buyer", granted_permissions=permissions) for topic in topics]
         selected_skills = {skill.name: skill for selection in selections for skill in selection.skills}
         conflicts = sorted({group for selection in selections for group in selection.conflicts})
@@ -193,6 +195,8 @@ class CommerceSupport:
             results, graph_status = self.model_runtime.run(graph, message, execution_context, ledger)
         else:
             results, graph_status = self.runner.run(graph, execution_context)
+        handoff_policy_results = [(node, result) for node, result in results
+                                  if node.intent in HANDOFF_TOPICS]
         evidence = EvidenceMerger.merge(results)
         role_order = {role: index for index, role in enumerate(routing.roles)}
         contributions = (sorted([{**item, "collaboration_position":
@@ -201,24 +205,73 @@ class CommerceSupport:
                          key=lambda item: (role_order[item["agent"]], topics.index(item["intent"])))
                          if ledger else [])
         failed_topics = {node.intent for node, result in results if not result.success}
-        deferred = any(x in message for x in ("别通知", "不要通知", "不需要转", "暂时不要联系", "先了解规则", "只问规则"))
-        missing_price = "price_breakdown" in topics and not any(x in message for x in ("优惠", "实付", "成交")) and not any(e.get("field") == "display_price" for e in evidence)
         # A planner cannot erase an explicit transaction/handoff request by
         # omitting its topic. Retain the lexical safety signal independently.
         safety_topics = tuple(set(topics) | set(base.intents))
-        needs_merchant = (active_escalation(message, safety_topics) or "invoice_query" in safety_topics
-                          or bool(conflicts) or bool(failed_topics) or missing_price) and not deferred
-        if ledger and not deferred:
-            # Model handoff is a proposal, not authority. A readable catalog
-            # status is enough to explain the page; inability to guarantee live
-            # inventory does not by itself justify sharing a private conversation.
-            missing_fields = {"inventory_query": "catalog_status", "sku_query": "description"}
-            proposed = {c["intent"] for c in ledger.snapshot()["contributions"] if c.get("needs_merchant")}
-            if any(t in proposed and not any(e.get("field") == field and e.get("value") for e in evidence)
-                   for t, field in missing_fields.items()):
-                needs_merchant = True
+        handoff_decision = self.handoff_workflow.constraints(message, topics,
+            safety_topics=safety_topics, evidence=evidence, conflicts=conflicts,
+            failed_topics=failed_topics, proposals=contributions, policy_results=handoff_policy_results)
+        preview = self.composer.compose(topics=tuple(topics), evidence=evidence, message=message,
+                                        needs_merchant=False, failed_topics=failed_topics)
+        required_pending = {s["intent"] for s in preview if s["status"] != "answered"}
+        required_pending |= failed_topics | (set(topics) & HANDOFF_TOPICS)
+        if handoff_decision["required"]:
+            required_pending |= set(topics) & {"refund_policy", "cancel_policy", "invoice_query", "delivery_exception"}
+        stage_context = {**execution_context, "handoff_phase": True, "agent_role": "escalation", "allow_writes": True,
+            "allowed_tools": set(execution_context["allowed_tools"]) & {"submit_merchant_handoff"},
+            "message": message, "topics": topics, "verified_sections": preview, "verified_evidence": evidence,
+            "failed_topics": failed_topics, "required_pending": [t for t in topics if t in required_pending],
+            "handoff_constraints": handoff_decision, "role_results": contributions,
+            "request_id": request_id, "conversation_id": conversation_id,
+            "deadline": ledger.deadline if ledger else started + 60}
+        handoff_result, stage_tools = None, []
+        stage_needed = bool(handoff_decision["allowed_reasons"] or set(topics) & HANDOFF_TOPICS)
+        source = "not_needed"
+        plan_failed = False
+        if stage_needed:
+            if "escalation" not in routing.roles:
+                routing = replace(routing, supporting=(*routing.supporting, "escalation"),
+                                  reason=routing.reason + "; escalation_handoff_planning")
+            if self.model_runtime:
+                handoff_result = self.model_runtime.run_handoff(stage_context, ledger)
+                source = "model_agent"
+                plan_failed = not handoff_result.success
+            if handoff_result is None or not handoff_result.success:
+                source = "deterministic_agent_fallback" if self.model_runtime else "offline_agent"
+                agent = next(a for role, a in self.agents.items() if role.value == "escalation")
+                handoff_result = self.tools.call("submit_merchant_handoff", agent.fallback_plan(stage_context), stage_context)
+                trace = {"name": "submit_merchant_handoff", "role": "escalation", "intent": "merchant_handoff",
+                         "phase": "handoff_planning", "source": source,
+                         "status": "ok" if handoff_result.success else "error", "error": handoff_result.error,
+                         "latency_ms": handoff_result.latency_ms}
+                stage_tools.append(trace)
+                if ledger:
+                    with ledger.lock:
+                        ledger.tools.append(trace)
+                        ledger.contributions.append({"agent": "escalation", "intent": "merchant_handoff",
+                            "phase": "handoff_planning", "status": "deterministic_fallback",
+                            "needs_merchant": bool(handoff_result.success and handoff_result.data["needs_merchant"]),
+                            "evidence_ids": [e["evidence_id"] for e in evidence]})
+        submission = handoff_result.data if handoff_result and handoff_result.success else None
+        needs_merchant = bool(submission and submission["needs_merchant"])
+        handoff_decision.update(source=source, model_plan_failed=plan_failed, needs_merchant=needs_merchant,
+            reasons=[submission["plan"]["reason_code"]] if needs_merchant else [],
+            submission_status=submission["status"] if submission else "not_submitted",
+            error=handoff_result.error if handoff_result else None)
+        role_order = {role: index for index, role in enumerate(routing.roles)}
+        if ledger:
+            contributions = sorted([{**item, "collaboration_position":
+                "primary" if item["agent"] == routing.primary else "supporting"}
+                for item in ledger.snapshot()["contributions"]], key=lambda item: (
+                    role_order[item["agent"]], topics.index(item["intent"]) if item["intent"] in topics else len(topics)))
+        if stage_needed and submission is None:
+            failed_topics |= set(topics) & HANDOFF_TOPICS
         sections = self.composer.compose(topics=tuple(topics), evidence=evidence, message=message,
                                          needs_merchant=needs_merchant, failed_topics=failed_topics)
+        if needs_merchant:
+            for section in sections:
+                if section["intent"] in submission["plan"]["pending_topics"] and section["status"] == "answered":
+                    section["status"] = "needs_merchant"
         grounding = validate_sections(sections, evidence)
         model_use = {"mode": "deterministic_local", "model": None, "prompt_tokens": 0, "completion_tokens": 0}
         semantic_check = {'mode':'template_or_typed_field_gate','attempted':False}
@@ -318,7 +371,7 @@ class CommerceSupport:
             # Do not announce a second handoff or silently overwrite the human
             # workflow. AI may supply verified information, not merchant consent.
             for s in sections:
-                if s['intent']=='merchant_handoff':
+                if s['intent'] in {'merchant_handoff', 'human_handoff', 'complaint'}:
                     s['text']='商家已经加入这段对话，需要商家确认的事项请以商家接下来的回复为准。'
             answer = "\n".join(dict.fromkeys(s['text'] for s in sections))
         resolved = [s['intent'] for s in sections if s['status']=='answered']
@@ -346,14 +399,7 @@ class CommerceSupport:
         grounding['semantic_check']=semantic_check
         resolved = [s["intent"] for s in sections if s["status"] == "answered"]
         pending = [s["intent"] for s in sections if s["status"] != "answered"]
-        labels = {"inventory_query": "确认库存", "price_breakdown": "核对价格与优惠", "delivery_status": "确认配送及到货时间",
-                  "delivery_exception": "核实未收货或配送异常", "refund_policy": "处理退货退款诉求", "cancel_policy": "确认取消订单",
-                  "invoice_query": "确认发票抬头", "complaint": "处理买家投诉", "human_handoff": "买家要求人工"}
-        handoff = {"reason": intent.intent.value, "question_summary": "；".join(labels.get(t, "补充商品信息") for t in topics),
-                   "customer_question": redact_identifiers(message),
-                   "order_summary": ({k: v for k, v in (purchase or {}).items() if k in {"order_alias", "fulfillment_status", "sku_id"}} or {"availability": "未绑定订单"}),
-                   "answered_topics": resolved, "pending_topics": pending, "evidence_ids": [e["evidence_id"] for e in evidence],
-                   "merchant_action": "请商家核实待确认事项并直接回复买家", "simulated": True} if needs_merchant else None
+        handoff = submission["summary"] if needs_merchant else None
         metadata = {"request_id": request_id, "intent": intent.intent.value, "topics": topics,
                     "intent_three_way": {k: v for k, v in three_way.items() if k not in {"entities", "actor_type"}},
                     "agent_roles": list(routing.roles),
@@ -362,19 +408,22 @@ class CommerceSupport:
                     "agent_contributions": [{"agent": n.role, "intent": n.intent, "tool": n.tool,
                                              "status": "completed" if r.success else "failed",
                                              "evidence_ids": [e.get("evidence_id") for e in (r.data or []) if isinstance(e, dict)]}
-                                            for n, r in results],
+                                            for n, r in results] + ([{"agent": "escalation", "intent": "merchant_handoff",
+                        "phase": "handoff_planning", "status": "completed" if submission else "failed",
+                        "evidence_ids": submission["plan"]["evidence_ids"] if submission else []}] if stage_needed else []),
                     "task_graph": {"intents": topics, "nodes": [{"id": n.id, "intent": n.intent, "role": n.role, "tool": n.tool,
                                     "depends_on": list(n.depends_on)} for n in graph.nodes], **graph_status},
-                    "tools_used": [{"name": n.tool, "role": n.role, "intent": n.intent, "status": "ok" if r.success else "error", "error": r.error, "latency_ms": r.latency_ms} for n, r in results],
+                    "tools_used": [{"name": n.tool, "role": n.role, "intent": n.intent, "status": "ok" if r.success else "error", "error": r.error, "latency_ms": r.latency_ms} for n, r in results] + stage_tools,
                     "skills": sorted(selected_skills), "skill_conflicts": conflicts, "skill_expired": expired,
                     "skill_denied_tools": sorted(denied_tools),
                     "evidence": evidence, "evidence_ids": [e["evidence_id"] for e in evidence],
                     "answer_sections": sections, "grounding": grounding, "grounded": bool(evidence) and grounding["passed"],
-                    "rag": {"enabled": any(n.tool == "search_knowledge" for n in graph.nodes),
+                    "rag": {"enabled": any(n.tool == "search_knowledge" for n, _ in results),
                             "backends": sorted({e.get("retrieval_backend", "unknown") for e in evidence if e.get("kind") == "knowledge"}),
                             "transport": "mcp_sdk_memory", "titles": [e.get("title") for e in evidence if e.get("kind") == "knowledge"]},
                     "status": "escalated" if needs_merchant else "answered" if not pending else "clarifying",
                     "needs_merchant": needs_merchant, "handoff_summary": handoff,
+                    "handoff_workflow": handoff_decision, "handoff_submission": submission if needs_merchant else None,
                     "provenance": product.get("provenance", "unverified"), "model_use": model_use,
                     "working_memory_used": bool(prior), "episodic_memory_used": bool(durable.get("summary") or durable.get('episodes')),
                     "semantic_memory_recalled":len(durable.get('episodes',[])),

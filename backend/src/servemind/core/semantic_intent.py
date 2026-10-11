@@ -8,6 +8,10 @@ from functools import lru_cache
 from servemind.core.intent_recognizer import Intent, classify_message, classify_message_three_way
 
 DESCRIPTIONS = {
+    Intent.QUERY: "泛化的信息咨询，未说明具体商品、订单或业务主题；明确价格、库存、物流等问题优先使用对应业务意图",
+    Intent.REQUEST: "泛化的处理、修改或办理请求，操作对象尚不明确；不是执行交易的授权，明确退款、取消等使用对应业务意图",
+    Intent.GREETING: "单纯问候、打招呼或告别，没有具体业务诉求；带有业务问题的问候优先识别业务意图",
+    Intent.FEEDBACK: "感谢、认可或正面反馈，没有新的业务诉求；不满和争议使用投诉意图",
     Intent.ORDER_QUERY: "查询本人订单详情、买了什么和订单记录",
     Intent.DELIVERY_STATUS: "查询快递物流进度以及什么时候收到货、发货和预计送达时间",
     Intent.DELIVERY_EXCEPTION: "包裹丢失或未收到货，签收争议和配送异常",
@@ -21,7 +25,7 @@ DESCRIPTIONS = {
     Intent.COMPLAINT: "投诉商品服务或商家，希望处理不满、争议或赔偿诉求",
     Intent.BROWSING_HISTORY: "查询本人最近浏览或看过的商品记录",
     Intent.CLARIFICATION: "问题缺少关键指代或信息，需要澄清是哪件商品或哪个订单",
-    Intent.OTHER: "你好，谢谢，再见，普通问候，不涉及业务问题",
+    Intent.OTHER: "无法归入已有类别的内容；不是问候、感谢、明确查询或明确操作请求",
 }
 
 

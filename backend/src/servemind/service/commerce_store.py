@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 
 from servemind.config.settings import COMMERCE_DB_PATH, DATA_ROOT, DATA_VERSION, DELIVERY_DATA_PATH, ORDER_DATA_PATH
 from servemind.memory.conversation_lock import ConversationLock
+from servemind.service.commerce_handoff import CommerceHandoffWorkflow
 
 
 DEFAULT_COMMERCE_DB = COMMERCE_DB_PATH
@@ -725,6 +726,7 @@ class CommerceStore:
         prepared = metadata.pop('_memory_prepared',None)
         with self._db() as connection, connection:
             self._begin_write(connection)
+            CommerceHandoffWorkflow.validate_commit(metadata, conversation)
             connection.execute(
                 """INSERT INTO messages
                    (id, conversation_id, sender_type, sender_id, content, reply_to_id, metadata_json, created_at)

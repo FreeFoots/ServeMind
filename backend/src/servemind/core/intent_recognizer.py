@@ -6,6 +6,10 @@ import re
 
 
 class Intent(str, Enum):
+    QUERY = "query"
+    REQUEST = "request"
+    GREETING = "greeting"
+    FEEDBACK = "feedback"
     ORDER_QUERY = "order_query"
     DELIVERY_STATUS = "delivery_status"
     DELIVERY_EXCEPTION = "delivery_exception"
@@ -20,6 +24,19 @@ class Intent(str, Enum):
     INVOICE_QUERY = "invoice_query"
     CLARIFICATION = "clarification"
     OTHER = "other"
+
+
+GENERAL_INTERACTION_INTENTS = frozenset({
+    Intent.QUERY, Intent.REQUEST, Intent.GREETING, Intent.FEEDBACK,
+    Intent.CLARIFICATION, Intent.OTHER,
+})
+
+_GENERAL_PATTERNS = {
+    Intent.REQUEST: r"帮我(?:处理|修改|操作|办理|解决)|(?:处理|修改|操作|办理)一下",
+    Intent.QUERY: r"咨询|我有个问题|我有问题|查一下|查询一下|想了解|了解一下|请问",
+    Intent.FEEDBACK: r"谢谢|感谢|辛苦了|很有帮助|很满意|服务很好|服务不错|太棒了|\bthanks?\b",
+    Intent.GREETING: r"你好|您好|早上好|下午好|晚上好|早安|晚安|再见|\b(?:hello|hi)\b",
+}
 
 
 @dataclass(frozen=True)
@@ -42,7 +59,7 @@ _PATTERNS: dict[Intent, tuple[str, ...]] = {
     Intent.BROWSING_HISTORY: ("浏览记录", "看过", "浏览过", "最近看"),
     Intent.REFUND_POLICY: ("退款", "退货", "退钱", "怎么退"),
     Intent.CANCEL_POLICY: ("取消订单", "撤单", "取消"),
-    Intent.HUMAN_HANDOFF: ("人工", "客服", "升级", "找商家", "交给店家", "交给商家", "转商家", "联系店家", "找店家", "转人工"),
+    Intent.HUMAN_HANDOFF: ("人工", "找客服", "联系客服", "转客服", "升级", "找商家", "交给店家", "交给商家", "转商家", "联系店家", "找店家", "转人工"),
     Intent.INVOICE_QUERY: ("发票", "开票", "抬头"),
     Intent.COMPLAINT: ("太差", "不满", "生气", "投诉"),
     Intent.ORDER_QUERY: ("订单", "买了什么", "订单状态", "订单详情"),
@@ -76,6 +93,12 @@ def classify_message(message: str) -> IntentResult:
     if Intent.DELIVERY_STATUS in scores and Intent.ORDER_QUERY in scores:
         scores[Intent.DELIVERY_STATUS] = max(scores[Intent.DELIVERY_STATUS], scores[Intent.ORDER_QUERY] + 0.01)
     if not scores:
+        # Specific business topics take precedence over conversational prefixes.
+        # A generic operation request grants no permission to execute a trade.
+        for intent, pattern in _GENERAL_PATTERNS.items():
+            if re.search(pattern, text):
+                return IntentResult(intent, [intent], 0.65, _entities(message),
+                                    {"pattern": 0.65}, actor_type=actor)
         return IntentResult(Intent.OTHER, [Intent.OTHER], 0.2, _entities(message), {"pattern": 0.2}, actor_type=actor)
     ordered = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
     primary, confidence = ordered[0]

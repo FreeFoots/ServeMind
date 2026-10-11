@@ -57,27 +57,22 @@ class ServeMindAgent:
         return {role.value: {"mission": agent.profile.mission, "workflow": list(agent.profile.workflow), "tool_scope": list(agent.profile.tool_scope), "success_rate": round(agent.success_rate, 3), "routing_penalty": self.monitor.penalties.get(role.value, 0.0)} for role, agent in self.agent_pool.items()}
 
     def _route_agents(self, intent: IntentResult, message: str) -> dict[str, Any]:
-        text = (message or "").lower()
-        if intent.intent in (Intent.HUMAN_HANDOFF, Intent.COMPLAINT) or any(word in text for word in ("投诉", "人工", "赔偿")):
+        if intent.intent in (Intent.HUMAN_HANDOFF, Intent.COMPLAINT):
             primary = AgentRole.ESCALATION
-        elif intent.intent in (Intent.REFUND_POLICY, Intent.CANCEL_POLICY, Intent.PRICE_BREAKDOWN):
+        elif intent.intent in (Intent.REFUND_POLICY, Intent.CANCEL_POLICY, Intent.PRICE_BREAKDOWN, Intent.INVOICE_QUERY):
             primary = AgentRole.BILLING
-        elif intent.intent in (Intent.DELIVERY_STATUS, Intent.DELIVERY_EXCEPTION):
-            primary = AgentRole.FULFILLMENT
+        elif intent.intent in (Intent.ORDER_QUERY, Intent.DELIVERY_STATUS, Intent.DELIVERY_EXCEPTION):
+            primary = AgentRole.ORDER_FULFILLMENT
         elif intent.intent in (Intent.SKU_QUERY, Intent.INVENTORY_QUERY, Intent.BROWSING_HISTORY):
             primary = AgentRole.CATALOG
-        elif intent.intent == Intent.ORDER_QUERY:
-            primary = AgentRole.ORDER
         else:
             primary = AgentRole.GENERAL
         supporting = []
-        if primary == AgentRole.FULFILLMENT and ("订单" in text or intent.entities.get("order_id")):
-            supporting.append(AgentRole.ORDER)
         if primary == AgentRole.BILLING and intent.entities.get("order_id"):
-            supporting.append(AgentRole.ORDER)
-        if primary == AgentRole.ORDER and any(word in text for word in ("物流", "配送", "包裹")):
-            supporting.append(AgentRole.FULFILLMENT)
-        return {"primary": primary.value, "supporting": [item.value for item in supporting], "multi_agent": bool(supporting), "penalties": {role.value: round(self.monitor.penalties.get(role.value, 0.0), 3) for role in [primary, *supporting]}}
+            supporting.append(AgentRole.ORDER_FULFILLMENT)
+        return {"primary": primary.value, "supporting": [item.value for item in supporting], "multi_agent": bool(supporting),
+                "handoff_requested": active_escalation(message, tuple(item.value for item in intent.candidates)),
+                "penalties": {role.value: round(self.monitor.penalties.get(role.value, 0.0), 3) for role in [primary, *supporting]}}
 
     def evidence(self) -> list[dict[str, Any]]:
         return self.evidence_for_order("81a6fa818d")

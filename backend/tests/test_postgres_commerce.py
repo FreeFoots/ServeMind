@@ -17,6 +17,7 @@ from servemind.service.commerce_support import CommerceSupport
 from servemind.service.postgres_commerce_store import PostgresCommerceStore, bound_sql
 from servemind.service.postgres_commerce_store import PostgresConversationLock
 from servemind.memory.postgres_memory import PostgresConversationMemory
+from test_model_agent_runtime import ScriptedModel
 
 
 def test_bound_sql_keeps_literal_question_and_bound_values_separate():
@@ -46,7 +47,8 @@ def test_native_postgres_workflow_authorization_and_idempotence(pg):
     assert store.authenticate(token)['id'] == buyer['id']
     product = store.create_product(account=merchant, title='耳机', description='无线', sku_id=None, price=Decimal('99'))
     conv = store.create_conversation(account=buyer, product_id=product['id'])
-    support = CommerceSupport(use_llm=False)
+    model = ScriptedModel(["price_breakdown"])
+    support = CommerceSupport(llm_client=model)
     kwargs = dict(account=buyer, conversation_id=conv['id'], content='价格多少', client_message_id='p1', support=support)
     first = store.send_message(**kwargs)
     assert '99.00' in first['ai_message']['content']
@@ -56,11 +58,33 @@ def test_native_postgres_workflow_authorization_and_idempotence(pg):
     assert error.value.status_code == 404
     with pytest.raises(HTTPException):
         store.get_conversation(account=stranger, conversation_id=conv['id'])
+    model.topics = ["human_handoff"]
+    original_reply = support.reply
+    def wrong_scope(*args, **kwargs):
+        answer, meta = original_reply(*args, **kwargs)
+        meta['handoff_submission']['scope']['conversation_id'] = 'another-conversation'
+        return answer, meta
+    support.reply = wrong_scope
+    with pytest.raises(PermissionError):
+        store.send_message(account=buyer, conversation_id=conv['id'], content='请转人工给商家', client_message_id='p2', support=support)
+    private = store.get_conversation(account=buyer, conversation_id=conv['id'])
+    assert not private['merchant_visible'] and private['handoff_state'] == 'ai_support'
+    assert len([m for m in private['messages'] if m['sender_type'] == 'ai']) == 1
+    support.reply = original_reply
     shared = store.send_message(account=buyer, conversation_id=conv['id'], content='请转人工给商家', client_message_id='p2', support=support)
     assert shared['ai_message']['metadata']['needs_merchant']
+    assert shared['ai_message']['metadata']['handoff_workflow']['source'] == 'model_agent'
+    assert shared['ai_message']['metadata']['handoff_submission']['status'] == 'committed'
+    assert shared == store.send_message(account=buyer, conversation_id=conv['id'], content='请转人工给商家', client_message_id='p2', support=support)
     assert store.get_conversation(account=merchant, conversation_id=conv['id'])['merchant_visible']
     reply = store.send_message(account=merchant, conversation_id=conv['id'], content='您好，我来处理', client_message_id='m1', support=support)
     assert reply['message']['sender_type'] == 'merchant' and reply['ai_message'] is None
+    continued = store.send_message(account=buyer, conversation_id=conv['id'], content='请转人工给商家', client_message_id='p3', support=support)
+    assert continued['ai_message']['metadata']['handoff_submission']['status'] == 'already_active'
+    assert '已经加入' in continued['ai_message']['content']
+    current = store.get_conversation(account=buyer, conversation_id=conv['id'])
+    assert current['handoff_state'] == 'merchant_replied'
+    assert current['handoff_summary'] == shared['ai_message']['metadata']['handoff_summary']
     with psycopg.connect(dsn) as connection:
         with pytest.raises(psycopg.errors.CheckViolation):
             connection.execute(sql.SQL('UPDATE {}.products SET display_price_cents=0 WHERE id=%s').format(sql.Identifier(schema)), (product['id'],))
@@ -104,7 +128,7 @@ def test_memory_failure_rolls_back_reply_and_handoff_and_retry_is_idempotent(pg)
         def get(self,*args): return {}
         def put(self,*args): self.writes.append(args); return True
     cache = Cache()
-    support = CommerceSupport(use_llm=False,working_memory=cache)
+    support = CommerceSupport(llm_client=ScriptedModel(["human_handoff"]),working_memory=cache)
     support.durable_memory = memory
     support.semantic_memory = False
     write = memory.record_exchange
@@ -119,6 +143,7 @@ def test_memory_failure_rolls_back_reply_and_handoff_and_retry_is_idempotent(pg)
     memory.record_exchange = write
     result = store.send_message(**args)
     assert result['ai_message']['metadata']['needs_merchant']
+    assert result['ai_message']['metadata']['handoff_submission']['status'] == 'committed'
     assert '_memory_prepared' not in result['ai_message']['metadata']
     assert len(cache.writes)==1
     assert store.send_message(**args) == result

@@ -22,7 +22,9 @@ def health(request: Request):
                 "semantic_memory_enabled": request.app.state.commerce_support.semantic_memory,
                 "knowledge": os.getenv("SERVEMIND_RAG_BACKEND", "keyword"),
                 "skills": "dynamic",
-                "agent_runtime": "model_intent_domain_routing_parallel_roles" if request.app.state.commerce_support.model_runtime else "deterministic_fallback",
+                "agent_runtime": "model_intent_five_roles_parallel_agent_handoff" if request.app.state.commerce_support.model_runtime else "deterministic_fallback",
+                "agent_roles": [role.value for role in request.app.state.commerce_support.agents],
+                "handoff": "agent_led_guarded_transaction",
             }}
 
 

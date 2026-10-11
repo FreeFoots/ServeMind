@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 import re
 
+from servemind.core.intent_recognizer import GENERAL_INTERACTION_INTENTS
+
 
 class CommerceResponseComposer:
     def compose(self, *, topics: tuple[str, ...], evidence: list[dict], message: str,
@@ -17,7 +19,9 @@ class CommerceResponseComposer:
             fields: tuple[str, ...] = ()
             kind = "product"
             if topic in failed_topics:
-                text, status = "这部分暂时没查成功，我可以请商家继续核实。", "failed"
+                text, status = ("这次人工交接未能提交，目前不会通知商家，请稍后重试。"
+                                if topic in {"complaint", "human_handoff"} else
+                                "这部分暂时没查成功，我可以请商家继续核实。"), "failed"
             elif topic == "inventory_query":
                 fields = ("catalog_status",)
                 state = product.get("catalog_status")
@@ -89,6 +93,14 @@ class CommerceResponseComposer:
             elif topic in {"complaint", "human_handoff"}:
                 text = "我会把需要确认的问题转给商家，由商家在这里回复你。" if needs_merchant else "我先帮你说明，目前不会通知商家。"
                 status = "needs_merchant" if needs_merchant else "answered"
+            elif topic == "greeting":
+                text = "你好！我可以帮你了解商品、价格、订单和售后。" if not re.search(r"再见|晚安", message) else "再见，需要帮助时随时来找我。"
+            elif topic == "feedback":
+                text = "谢谢你的反馈！有其他问题可以继续告诉我。"
+            elif topic == "query":
+                text, status = "你想了解哪方面的信息？可以告诉我具体的商品、价格、订单或售后问题。", "clarifying"
+            elif topic == "request":
+                text, status = "你希望处理什么事情？请说明具体对象和操作，我先确认可以怎样帮你。", "clarifying"
             else:
                 text, status = "我可以帮你了解商品、价格、订单和售后。你想先了解哪一项？", "clarifying"
             if topic not in failed_topics:
@@ -113,7 +125,8 @@ def validate_sections(sections: list[dict], evidence: list[dict]) -> dict:
                 'delivery_exception':{'fulfillment_status'},'refund_policy':{'policy'},
                 'cancel_policy':{'policy'},'invoice_query':{'policy'}}
     bindings_valid = all(set(s["evidence_ids"]).issubset(known) for s in sections)
-    factual = [s for s in sections if s["status"] == "answered" and s["intent"] not in {"human_handoff", "complaint", "merchant_handoff", "other"}]
+    non_factual = {intent.value for intent in GENERAL_INTERACTION_INTENTS} | {"human_handoff", "complaint", "merchant_handoff"}
+    factual = [s for s in sections if s["status"] == "answered" and s["intent"] not in non_factual]
     field_kinds={'catalog_status':'product','title':'product','description':'product','category':'product',
                  'display_price':'product','paid_amount':'purchase','discount_amount':'purchase',
                  'fulfillment_status':'purchase','policy':'knowledge'}

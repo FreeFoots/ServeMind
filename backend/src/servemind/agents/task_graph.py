@@ -28,8 +28,11 @@ INTENT_TOOL = {
     Intent.CANCEL_POLICY: ("search_knowledge",),
 }
 ROLE_FOR_INTENT = {
-    Intent.ORDER_QUERY: "order", Intent.DELIVERY_STATUS: "fulfillment",
-    Intent.DELIVERY_EXCEPTION: "fulfillment", Intent.PRICE_BREAKDOWN: "billing",
+    Intent.QUERY: "general", Intent.REQUEST: "general",
+    Intent.GREETING: "general", Intent.FEEDBACK: "general",
+    Intent.CLARIFICATION: "general", Intent.OTHER: "general",
+    Intent.ORDER_QUERY: "order_fulfillment", Intent.DELIVERY_STATUS: "order_fulfillment",
+    Intent.DELIVERY_EXCEPTION: "order_fulfillment", Intent.PRICE_BREAKDOWN: "billing",
     Intent.SKU_QUERY: "catalog", Intent.INVENTORY_QUERY: "catalog",
     Intent.BROWSING_HISTORY: "catalog", Intent.REFUND_POLICY: "billing",
     Intent.CANCEL_POLICY: "billing", Intent.COMPLAINT: "escalation",
@@ -45,7 +48,7 @@ SIGNALS = {
     Intent.REFUND_POLICY: ("退款", "退货", "退钱", "怎么退"),
     Intent.CANCEL_POLICY: ("取消", "撤单"),
     Intent.COMPLAINT: ("投诉", "不满", "赔偿"),
-    Intent.HUMAN_HANDOFF: ("人工", "找商家", "转商家", "交给商家", "交给店家", "联系店家", "客服"),
+    Intent.HUMAN_HANDOFF: ("人工", "找商家", "转商家", "交给商家", "交给店家", "联系店家", "找客服", "联系客服", "转客服"),
     Intent.INVOICE_QUERY: ("发票", "开票", "抬头"),
     Intent.ORDER_QUERY: ("订单", "买了什么"),
 }
@@ -315,11 +318,13 @@ class ResponseComposer:
 
 def active_escalation(message: str, intents: tuple[str, ...]) -> bool:
     text = message.lower()
+    if re.search(r"(?:不需要|不要|不用|不想|暂时不要|别)(?:找|联系|转)客服", text):
+        return False
     if any(marker in text for marker in ("不需要转人工", "不要转人工", "不用转人工", "不想转人工", "先了解规则", "别通知店家", "别通知商家", "不要通知店家", "暂时不要联系商家")):
         return False
     if "如果" in text and not any(marker in text for marker in ("我要投诉", "要投诉", "找人工", "转人工", "请找商家", "找商家")):
         return False
-    if any(marker in text for marker in ("没收到", "未收到", "没拿到", "丢件", "丢了", "投诉", "找人工", "要人工", "转人工", "找商家", "给商家", "交给商家", "交给店家", "通知店家", "联系店家", "不想继续聊机器人", "赔偿")):
+    if any(marker in text for marker in ("没收到", "未收到", "没拿到", "丢件", "丢了", "投诉", "找人工", "要人工", "转人工", "找客服", "联系客服", "转客服", "找商家", "给商家", "交给商家", "交给店家", "通知店家", "联系店家", "不想继续聊机器人", "赔偿")):
         return True
     if "refund_policy" in intents and re.search(r"(?:我要|帮我|申请|想要|想|请立即|请马上|立即|请)退款", text):
         return True

@@ -39,6 +39,22 @@ class ScriptedModel:
                 result["tasks"] = [{"intent": self.topics[0], "depends_on": self.topics}]
             text = json.dumps(result)
             packet = {"role": "assistant", "content": text}
+        elif "升级 Agent 交接规划器" in system:
+            previous = [m for m in messages if m["role"] == "tool"]
+            if previous and json.loads(previous[-1]["content"])["success"]:
+                packet = {"role": "assistant", "content": "收到，等待事务提交。"}
+            else:
+                gate = user["constraints"]
+                needs = bool(gate["allowed_reasons"]) and not gate["deferred"]
+                if self.attack == "overhandoff":
+                    needs = True
+                plan = {"decision": "handoff" if needs else "none",
+                        "reason_code": gate["allowed_reasons"][0] if gate["allowed_reasons"] and needs else "none",
+                        "question_summary": user["question"], "pending_topics": user["required_pending"],
+                        "evidence_ids": [e["evidence_id"] for e in user["evidence"]],
+                        "merchant_action": "核实待确认事项并回复买家"}
+                packet = {"role": "assistant", "content": None, "tool_calls": [{"id": "handoff-call",
+                    "type": "function", "function": {"name": "submit_merchant_handoff", "arguments": json.dumps(plan)}}]}
         elif "Response Composer" in system:
             sections = user["sections"]
             if self.attack == "price":
@@ -49,6 +65,11 @@ class ScriptedModel:
             if not previous or self.attack == "loop":
                 params = {"product_id": user["product_id"]}
                 name = "get_current_product"
+                if user["topic"] in {"order_query", "delivery_status", "delivery_exception"}:
+                    name = "get_current_purchase"
+                if user["topic"] in {"complaint", "human_handoff"}:
+                    name = "search_knowledge"
+                    params = {"query": user["question"], "intent": user["topic"]}
                 if self.attack == "scope":
                     params = {"product_id": "someone-elses-product"}
                 if self.attack == "whitelist":

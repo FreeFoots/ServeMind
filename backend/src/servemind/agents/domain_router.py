@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from servemind.agents.task_graph import ROLE_FOR_INTENT, SIGNALS, TaskGraph, TaskNode, active_escalation
-from servemind.core.intent_recognizer import Intent, IntentResult
+from servemind.core.intent_recognizer import GENERAL_INTERACTION_INTENTS, Intent, IntentResult
 from servemind.mcp.commerce_tools import commerce_graph
 
 
@@ -16,6 +16,7 @@ class RoutingDecision:
     reason: str
     confidence: float
     clarification: bool = False
+    handoff_requested: bool = False
 
     @property
     def roles(self) -> tuple[str, ...]:
@@ -26,6 +27,7 @@ class RoutingDecision:
                 "supporting": list(self.supporting), "scores": dict(self.scores),
                 "reason": self.reason, "confidence": self.confidence,
                 "multi_agent": bool(self.supporting), "clarification": self.clarification,
+                "handoff_requested": self.handoff_requested,
                 "score_is_probability": False}
 
 
@@ -35,6 +37,11 @@ class CommerceDomainRouter:
         # Only recognized/verified topics can introduce a domain. Raw negated
         # keywords must not resurrect a task deliberately excluded by the LLM.
         topic_roles = {t: ROLE_FOR_INTENT.get(Intent(t), "general") for t in topics}
+        if any(role != "general" for role in topic_roles.values()):
+            # Greeting/clarification labels remain response topics, but cannot
+            # become the main business role alongside a concrete fact request.
+            topic_roles = {t: role for t, role in topic_roles.items()
+                           if Intent(t) not in GENERAL_INTERACTION_INTENTS}
         represented = set(topic_roles.values())
         missing = represented - available_roles
         if missing:
@@ -50,20 +57,18 @@ class CommerceDomainRouter:
                        for marker in SIGNALS.get(Intent(topic), ())}
             scores[role] += min(.45, sum(marker in message.lower() for marker in markers) * .18)
         # Entities are recognition hints, never authority to read another order.
-        if "order" in represented and intent.entities.get("order_id"):
-            scores["order"] += .1
+        if "order_fulfillment" in represented and intent.entities.get("order_id"):
+            scores["order_fulfillment"] += .1
         if "billing" in represented and intent.entities.get("amount"):
             scores["billing"] += .15
         scores = {role: round(score, 3) for role, score in scores.items()}
         ordered = sorted(represented, key=lambda role: (-scores[role], role))
+        # Independently answerable facts keep their primary role; Escalation
+        # reviews the handoff alongside them and is primary for handoff alone.
+        if any(role not in {"general", "escalation"} for role in represented):
+            ordered.sort(key=lambda role: (role in {"general", "escalation"}, -scores[role], role))
         primary = "general" if clarify else (ordered[0] if ordered else "general")
-        # Match EchoMind's escalation-first route while retaining independently
-        # answerable requested topics under the existing private-chat boundary.
-        escalation = ("escalation" in represented and
-                      active_escalation(message, tuple(t for t in topics
-                                                      if topic_roles[t] == "escalation")))
-        if escalation:
-            primary = "escalation"
+        handoff_requested = active_escalation(message, topics)
         supporting = tuple(role for role in ordered if role != primary and
                            scores[role] >= .45 and scores[role] >= scores[primary] * .55)
         # Explicit multi-domain questions cannot lose a requested topic solely
@@ -73,14 +78,14 @@ class CommerceDomainRouter:
         reason = (f"intent={intent.intent.value}; primary={primary}; "
                   f"supporting={','.join(supporting) or 'none'}; "
                   f"scores={','.join(f'{role}:{scores[role]:.3f}' for role in ordered)}")
-        if escalation:
-            reason = "explicit_escalation_priority; " + reason
+        if handoff_requested:
+            reason += "; deterministic_handoff_requested"
         if retained:
             reason += "; retained_requested_domains=" + ",".join(retained)
         if clarify:
             reason = "low_confidence_other_clarification; " + reason
         return RoutingDecision(primary, supporting, scores, reason,
-                               round(min(scores.get(primary, 0), 1), 3), clarify)
+                               round(min(scores.get(primary, 0), 1), 3), clarify, handoff_requested)
 
     def tasks(self, decision: RoutingDecision, topics: tuple[str, ...], *,
               product_id: str, message: str) -> TaskGraph:
@@ -89,6 +94,12 @@ class CommerceDomainRouter:
         base = commerce_graph(topics, product_id, message)
         nodes = list(base.nodes)
         for topic in topics:
+            # Generic interactions are composed without business tools or a
+            # separate specialist model invocation. Preserve their trace label.
+            if topic in {"query", "request", "greeting", "feedback"}:
+                continue
+            if Intent(topic) in GENERAL_INTERACTION_INTENTS and "general" not in decision.roles:
+                continue
             if not any(node.intent == topic for node in nodes):
                 role = ROLE_FOR_INTENT.get(Intent(topic), "general")
                 nodes.append(TaskNode(f"task-{len(nodes)+1}", topic, role, "", {}))
@@ -96,6 +107,6 @@ class CommerceDomainRouter:
         nodes.sort(key=lambda node: priority[node.role])
         # TaskGraph remains a compatible trace container; commercial dispatch
         # has no dependency edges and runs once per selected role.
-        graph = TaskGraph(tuple(node.intent for node in nodes), tuple(nodes), deadline_seconds=60)
+        graph = TaskGraph(topics, tuple(nodes), deadline_seconds=60)
         graph.validate()
         return graph

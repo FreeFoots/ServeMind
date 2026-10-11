@@ -34,8 +34,9 @@ def build_report(cases, *, live=False, baseline=None, intent_limit=0):
             'judge_quality':metrics['judge_quality']>=.85,
             'tool_scope':runtime['unauthorized_block_count']==0,
             'grounding':runtime['grounding_failure_count']==0,
-            'intent_recognition':runtime['intent_recognition_fallback_count']==0}
-    report={'protocol':'commercial-domain-routing-regression-v3',
+            'intent_recognition':runtime['intent_recognition_fallback_count']==0,
+            'handoff_planning':runtime['handoff_planning_failure_count']==0}
+    report={'protocol':'commercial-five-role-agent-handoff-regression-v6',
             'dataset_sha256':hashlib.sha256(json.dumps(cases,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
             'model':model_metadata()['model'], 'execution_scope':evaluation['execution_scope'],
             'metrics':metrics,'evaluation':evaluation,

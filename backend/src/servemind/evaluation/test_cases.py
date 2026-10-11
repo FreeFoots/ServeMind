@@ -26,7 +26,7 @@ INTENT_CASES = [
     {"id": "intent-016", "message": "我想取消订单", "expected": "cancel_policy"},
     {"id": "intent-017", "message": "帮我找人工客服", "expected": "human_handoff"},
     {"id": "intent-018", "message": "我要投诉这个配送问题", "expected": "complaint"},
-    {"id": "intent-019", "message": "你好", "expected": "other"},
+    {"id": "intent-019", "message": "你好", "expected": "greeting"},
     {"id": "intent-020", "message": "我不知道该查什么", "expected": "other"},
 ]
 

@@ -11,6 +11,7 @@ from servemind.agents.commerce_agents import build_agent_pool
 from servemind.core.intent_recognizer import Intent
 from servemind.mcp.knowledge_client import KnowledgeMCPClient
 from servemind.mcp.tool_manager import Tool, ToolManager
+from servemind.service.commerce_handoff import HandoffPlan, CommerceHandoffWorkflow
 
 
 ROLE_SCOPES = {role.value: agent.profile.commerce_tool_scope for role, agent in build_agent_pool().items()}
@@ -92,6 +93,9 @@ def build_commerce_tools(knowledge: Any) -> ToolManager:
     manager.register(Tool("search_knowledge", "经 MCP 检索有效公共政策", policy,
                           input_model=PolicyInput, required_permissions=("policy_public",),
                           timeout_seconds=30))
+    manager.register(Tool("submit_merchant_handoff", "校验升级方案并暂存交接，随回复事务提交后才对商家可见",
+                          CommerceHandoffWorkflow.submit, input_model=HandoffPlan, read_only=False,
+                          required_permissions=("handoff_prepare",)))
     return manager
 
 

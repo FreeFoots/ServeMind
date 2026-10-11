@@ -121,7 +121,7 @@ def test_buyer_product_merchant_shared_thread_and_isolation(client: TestClient):
     assert "81a6fa818d" not in json.dumps(first["ai_message"]["metadata"])
     assert first["ai_message"]["metadata"]["evidence_ids"] == []
     assert first["ai_message"]["metadata"]["grounded"] is False
-    assert first["ai_message"]["metadata"]["routing"]["primary"] == "fulfillment"
+    assert first["ai_message"]["metadata"]["routing"]["primary"] == "order_fulfillment"
 
     assert client.get(path, headers=auth(merchant)).status_code == 404
     assert client.get("/v1/commerce/conversations", headers=auth(merchant)).json()["items"] == []

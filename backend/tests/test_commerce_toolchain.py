@@ -25,7 +25,7 @@ def keyword_backend(monkeypatch):
 
 def test_commercial_agents_execute_role_scoped_tools_and_bind_each_answer():
     answer, metadata = CommerceSupport(use_llm=False).reply("价格库存和物流一起查", PRODUCT)
-    assert {"billing", "catalog", "fulfillment"}.issubset(metadata["agent_roles"])
+    assert {"billing", "catalog", "order_fulfillment"}.issubset(metadata["agent_roles"])
     assert {"get_current_product", "get_current_purchase"} == {t["name"] for t in metadata["tools_used"]}
     sections = {s["intent"]: s for s in metadata["answer_sections"]}
     assert sections["price_breakdown"]["evidence_ids"]

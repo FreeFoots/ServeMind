@@ -120,6 +120,8 @@ class CommerceMonitor:
                  "status": metadata["status"], "tools": metadata["tools_used"],
                  "graph": metadata["task_graph"], "grounding": metadata["grounding"],
                  "handoff": metadata["needs_merchant"], "model_use": metadata["model_use"],
+                 "handoff_runtime": {k: metadata.get("handoff_workflow", {}).get(k)
+                                     for k in ("source", "model_plan_failed", "submission_status")},
                  "cache_hit": any(e.get("cache_hit") for e in metadata["evidence"]),
                  "rule_conflicts": len(metadata["skill_conflicts"]),
                  "rule_expired": len(metadata["skill_expired"]),
@@ -159,6 +161,9 @@ class CommerceMonitor:
                 "task_completion_rate": OnlineMonitor._rate(sum(e["graph"]["completed"] for e in events), sum(e["graph"]["total"] for e in events)),
                 "grounding_failure_count": sum(not e["grounding"]["passed"] for e in events),
                 "handoff_count": sum(e["handoff"] for e in events),
+                "handoff_model_plan_count": sum(e["handoff_runtime"].get("source") in
+                    {"model_agent", "deterministic_agent_fallback"} for e in events),
+                "handoff_planning_failure_count": sum(bool(e["handoff_runtime"].get("model_plan_failed")) for e in events),
                 "cache_hit_rate": OnlineMonitor._rate(sum(e["cache_hit"] for e in events), len(events)),
                 "provider_usage": {"input_tokens": sum(u.get("prompt_tokens", 0) for u in usage),
                                    "output_tokens": sum(u.get("completion_tokens", 0) for u in usage),

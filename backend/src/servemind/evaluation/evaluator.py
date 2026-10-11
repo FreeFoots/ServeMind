@@ -336,6 +336,7 @@ def evaluate_curated_commerce(cases: list[dict] | None = None, *, live_generatio
                           'intent':metadata['intent'],'topics':metadata['topics'], 'task_graph':metadata['task_graph'],
                           'intent_recognition':metadata['intent_three_way'], 'routing':metadata['routing'],
                           'agent_errors':metadata.get('agent_runtime',{}).get('errors',[]),
+                          'handoff_workflow':metadata.get('handoff_workflow',{}),
                           'agent_contributions':metadata.get('agent_contributions',[]),
                           "evidence": [{k: e.get(k) for k in ("field", "value", "scope", "document_version")} for e in metadata["evidence"]],
                           "model_use": metadata["model_use"], "passed": all(checks.values())})
@@ -368,7 +369,7 @@ def evaluate_curated_commerce(cases: list[dict] | None = None, *, live_generatio
     return {"total": len(selected), "passed": passed, "accuracy": _score(passed, len(selected)),
             "generation": "deepseek_with_evidence_gate" if live_generation else "deterministic_regression",
             "human_review_gate": human_review_gate(details), "runtime_metrics": support.monitor.summary(),
-            'execution_scope':'commercial_model_domain_routing_parallel_roles_scoped_replay_memory' if live_generation else 'commercial_deterministic_domain_routing_replay_memory',
+            'execution_scope':'commercial_model_five_roles_agent_led_handoff_scoped_replay_memory' if live_generation else 'commercial_deterministic_five_roles_agent_handoff_replay_memory',
             "live_judge": {"enabled": live_judge,
                            'success_rate':sum(c.get('judge',{}).get('succeeded',False) for c in details)/len(details) if live_judge and details else None,
                            "mean": round(sum(c["judge"]["mean"] for c in details if c['judge']['succeeded']) / sum(c['judge']['succeeded'] for c in details), 4)

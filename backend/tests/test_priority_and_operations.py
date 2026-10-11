@@ -97,7 +97,7 @@ def test_actual_model_curated_path_has_completion_contract(monkeypatch):
     report=evaluate_curated_commerce([CURATED_COMMERCE_CASES[0]],live_generation=True)
     graph=report['cases'][0]['turns'][0]['task_graph']
     assert graph['completion_rate']==1 and graph['model_success_rate']==1
-    assert report['execution_scope']=='commercial_model_domain_routing_parallel_roles_scoped_replay_memory'
+    assert report['execution_scope']=='commercial_model_five_roles_agent_led_handoff_scoped_replay_memory'
 
 def test_recent_merchant_text_is_attributed_in_model_context():
     model=ScriptedModel(['price_breakdown'])
